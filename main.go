@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,8 +82,8 @@ type MultiHostClient struct {
 
 func main() {
 	// Parse command line flags
-	configFile := flag.String("config", "multi-host-config.json", "Path to JSON configuration file")
-	cycles := flag.Int("cycles", 10, "Number of polling cycles (0 for infinite)")
+	configFile := flag.String("config", "config.json", "Path to JSON configuration file")
+	cycles := flag.Int("cycles", 0, "Number of polling cycles (0 for infinite)")
 	single := flag.Bool("single", false, "Run only once then exit")
 	logFile := flag.String("log", "", "Log to file instead of stdout")
 	flag.Parse()
@@ -258,7 +259,7 @@ func (hc *HostClient) pollLoop(cycles int, mc *MultiHostClient) {
 func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 	// Connect if not connected
 	if !hc.connected {
-		err := hc.client.Open() // Changed from Connect() to Open()
+		err := hc.client.Open()
 		if err != nil {
 			log.Printf("Host %s: Connection failed: %v", hc.config.Name, err)
 			return
@@ -268,8 +269,24 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 	}
 
 	// Poll all registers
-	for _, reg := range hc.config.Registers {
+	for i, reg := range hc.config.Registers {
+		// Add small delay between reads to prevent overwhelming the server
+		if i > 0 {
+			time.Sleep(50 * time.Millisecond)
+		}
+
 		result := hc.readRegister(reg)
+
+		// If we get a connection error, mark as disconnected
+		if result.Error != nil && strings.Contains(result.Error.Error(), "connection") {
+			hc.connected = false
+			log.Printf("Host %s: Connection lost, will reconnect", hc.config.Name)
+			// Close the existing connection
+			if hc.client != nil {
+				hc.client.Close()
+			}
+		}
+
 		hc.sendResult(result, mc)
 	}
 }
