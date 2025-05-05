@@ -106,7 +106,34 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	fmt.Println("Address Mapping Verification:")
+	fmt.Println("----------------------------")
 
+	for _, host := range config.Hosts {
+		fmt.Printf("\nHost: %s\n", host.Name)
+		for _, reg := range host.Registers {
+			protocolAddr := getModbusAddress(reg)
+			fmt.Printf("  %s (%s):\n", reg.Name, reg.Type)
+			fmt.Printf("    Config Address: %d\n", reg.Address)
+			fmt.Printf("    Protocol Address: %d\n", protocolAddr)
+
+			// Test what the server would expect
+			var expectedConfigAddr uint16
+			switch reg.Type {
+			case TypeInputRegister:
+				expectedConfigAddr = 30000 + protocolAddr
+			case TypeHoldingRegister:
+				expectedConfigAddr = 40000 + protocolAddr
+			case TypeCoil:
+				expectedConfigAddr = 10000 + protocolAddr
+			case TypeDiscreteInput:
+				expectedConfigAddr = 20000 + protocolAddr
+			}
+
+			fmt.Printf("    Server expects config address: %d\n", expectedConfigAddr)
+			fmt.Printf("    Match: %v\n", reg.Address == expectedConfigAddr)
+		}
+	}
 	// Create and start multi-host client
 	multiClient := &MultiHostClient{
 		config:      config,
@@ -262,12 +289,16 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 		// Close any existing connection first
 		if hc.client != nil {
 			hc.client.Close()
+			// Give it a moment to clean up
+			time.Sleep(100 * time.Millisecond)
+			hc.client = nil
 		}
+		timeout, _ := time.ParseDuration(hc.config.Timeout)
 
 		// Recreate the client
 		clientConfig := &modbus.ClientConfiguration{
 			URL:     fmt.Sprintf("tcp://%s:%d", hc.config.Host, hc.config.Port),
-			Timeout: hc.parseTimeout(),
+			Timeout: timeout,
 		}
 		client, err := modbus.NewClient(clientConfig)
 		if err != nil {
@@ -280,6 +311,8 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 		err = hc.client.Open()
 		if err != nil {
 			log.Printf("Host %s: Connection failed: %v", hc.config.Name, err)
+			hc.client.Close()
+			hc.client = nil
 			return
 		}
 
@@ -289,6 +322,7 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 			log.Printf("Host %s: Failed to set unit ID: %v", hc.config.Name, err)
 			hc.connected = false
 			hc.client.Close()
+			hc.client = nil
 			return
 		}
 
@@ -296,25 +330,27 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 		log.Printf("Host %s: Connected successfully", hc.config.Name)
 	}
 
-	// Poll all registers
 	for i, reg := range hc.config.Registers {
 		// Add small delay between reads to prevent overwhelming the server
 		if i > 0 {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond) // Increase from 50ms
 		}
 
 		result := hc.readRegister(reg)
 
 		// If we get a timeout or connection error, mark as disconnected
 		if result.Error != nil {
-			if strings.Contains(result.Error.Error(), "timed out") ||
-				strings.Contains(result.Error.Error(), "connection") ||
-				strings.Contains(result.Error.Error(), "reset") ||
-				strings.Contains(result.Error.Error(), "broken pipe") {
+			errorStr := result.Error.Error()
+			if strings.Contains(errorStr, "timed out") ||
+				strings.Contains(errorStr, "connection") ||
+				strings.Contains(errorStr, "reset") ||
+				strings.Contains(errorStr, "broken pipe") ||
+				strings.Contains(errorStr, "EOF") {
 				hc.connected = false
-				log.Printf("Host %s: Connection lost (%v), will reconnect", hc.config.Name, result.Error)
+				log.Printf("Host %s: Connection error (%v), will clean up and reconnect", hc.config.Name, result.Error)
 				if hc.client != nil {
 					hc.client.Close()
+					hc.client = nil
 				}
 			}
 		}
@@ -333,7 +369,7 @@ func (hc *HostClient) parseTimeout() time.Duration {
 	return timeout
 }
 
-// Improve error handling in readRegister
+// Improve error handling and debugging in readRegister
 func (hc *HostClient) readRegister(reg RegisterConfig) ReadResult {
 	startTime := time.Now()
 	result := ReadResult{
@@ -350,6 +386,10 @@ func (hc *HostClient) readRegister(reg RegisterConfig) ReadResult {
 
 	address := hc.getModbusAddress(reg)
 
+	// Add debug logging
+	log.Printf("Reading %s (%s) - Config address: %d, Protocol address: %d",
+		reg.Name, reg.Type, reg.Address, address)
+
 	defer func() {
 		if r := recover(); r != nil {
 			result.Error = fmt.Errorf("panic: %v", r)
@@ -359,47 +399,63 @@ func (hc *HostClient) readRegister(reg RegisterConfig) ReadResult {
 
 	switch reg.Type {
 	case TypeCoil:
+		log.Printf("Calling ReadCoil for address: %d", address)
 		value, err := hc.client.ReadCoil(address)
 		if err != nil {
+			log.Printf("ReadCoil error for %s: %v", reg.Name, err)
 			result.Error = err
 		} else {
+			log.Printf("ReadCoil success for %s: %v", reg.Name, value)
 			result.Value = value
 			result.Success = true
 		}
 
 	case TypeDiscreteInput:
+		log.Printf("Calling ReadDiscreteInput for address: %d", address)
 		value, err := hc.client.ReadDiscreteInput(address)
 		if err != nil {
+			log.Printf("ReadDiscreteInput error for %s: %v", reg.Name, err)
 			result.Error = err
 		} else {
+			log.Printf("ReadDiscreteInput success for %s: %v", reg.Name, value)
 			result.Value = value
 			result.Success = true
 		}
 
 	case TypeInputRegister:
+		log.Printf("Calling ReadRegisters for address: %d, quantity: 1", address)
 		registers, err := hc.client.ReadRegisters(address, 1, modbus.INPUT_REGISTER)
 		if err != nil {
+			log.Printf("ReadRegisters (input) error for %s: %v", reg.Name, err)
 			result.Error = err
 		} else {
 			if len(registers) > 0 {
 				intValue := hc.interpretRegisterValue(registers[0], reg)
+				log.Printf("ReadRegisters (input) success for %s: raw=%d, interpreted=%d",
+					reg.Name, registers[0], intValue)
 				result.Value = intValue
 				result.Success = true
 			} else {
+				log.Printf("ReadRegisters (input) returned empty for %s", reg.Name)
 				result.Error = fmt.Errorf("no data received")
 			}
 		}
 
 	case TypeHoldingRegister:
+		log.Printf("Calling ReadRegisters for address: %d, quantity: 1", address)
 		registers, err := hc.client.ReadRegisters(address, 1, modbus.HOLDING_REGISTER)
 		if err != nil {
+			log.Printf("ReadRegisters (holding) error for %s: %v", reg.Name, err)
 			result.Error = err
 		} else {
 			if len(registers) > 0 {
 				intValue := hc.interpretRegisterValue(registers[0], reg)
+				log.Printf("ReadRegisters (holding) success for %s: raw=%d, interpreted=%d",
+					reg.Name, registers[0], intValue)
 				result.Value = intValue
 				result.Success = true
 			} else {
+				log.Printf("ReadRegisters (holding) returned empty for %s", reg.Name)
 				result.Error = fmt.Errorf("no data received")
 			}
 		}
@@ -560,4 +616,18 @@ func (mc *MultiHostClient) waitForCompletion() {
 
 	// Give a moment for final results to be processed
 	time.Sleep(100 * time.Millisecond)
+}
+func getModbusAddress(reg RegisterConfig) uint16 {
+	switch reg.Type {
+	case TypeCoil:
+		return reg.Address - 10000
+	case TypeDiscreteInput:
+		return reg.Address - 20000
+	case TypeInputRegister:
+		return reg.Address - 30000
+	case TypeHoldingRegister:
+		return reg.Address - 40000
+	default:
+		return reg.Address
+	}
 }
