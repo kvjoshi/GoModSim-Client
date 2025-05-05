@@ -5,7 +5,7 @@
       "host": "127.0.0.1",
       "port": 502,
       "unit_id": 1,
-      "timeout": "5s",
+      "timeout": "15s",
       "interval": "1s",
       "enabled": true,
       "registers": [
