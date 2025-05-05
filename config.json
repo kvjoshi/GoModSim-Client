@@ -6,7 +6,7 @@
       "port": 502,
       "unit_id": 1,
       "timeout": "15s",
-      "interval": "1s",
+      "interval": "3s",
       "enabled": true,
       "registers": [
         {
