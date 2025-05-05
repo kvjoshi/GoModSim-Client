@@ -255,15 +255,43 @@ func (hc *HostClient) pollLoop(cycles int, mc *MultiHostClient) {
 	}
 }
 
-// pollOnce performs a single poll of all registers for a host
+// Update your HostClient pollOnce method to handle connections better
 func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 	// Connect if not connected
 	if !hc.connected {
-		err := hc.client.Open()
+		// Close any existing connection first
+		if hc.client != nil {
+			hc.client.Close()
+		}
+
+		// Recreate the client
+		clientConfig := &modbus.ClientConfiguration{
+			URL:     fmt.Sprintf("tcp://%s:%d", hc.config.Host, hc.config.Port),
+			Timeout: hc.parseTimeout(),
+		}
+		client, err := modbus.NewClient(clientConfig)
+		if err != nil {
+			log.Printf("Host %s: Failed to create client: %v", hc.config.Name, err)
+			return
+		}
+		hc.client = client
+
+		// Try to connect
+		err = hc.client.Open()
 		if err != nil {
 			log.Printf("Host %s: Connection failed: %v", hc.config.Name, err)
 			return
 		}
+
+		// Set unit ID
+		err = hc.client.SetUnitId(hc.config.UnitID)
+		if err != nil {
+			log.Printf("Host %s: Failed to set unit ID: %v", hc.config.Name, err)
+			hc.connected = false
+			hc.client.Close()
+			return
+		}
+
 		hc.connected = true
 		log.Printf("Host %s: Connected successfully", hc.config.Name)
 	}
@@ -277,13 +305,17 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 
 		result := hc.readRegister(reg)
 
-		// If we get a connection error, mark as disconnected
-		if result.Error != nil && strings.Contains(result.Error.Error(), "connection") {
-			hc.connected = false
-			log.Printf("Host %s: Connection lost, will reconnect", hc.config.Name)
-			// Close the existing connection
-			if hc.client != nil {
-				hc.client.Close()
+		// If we get a timeout or connection error, mark as disconnected
+		if result.Error != nil {
+			if strings.Contains(result.Error.Error(), "timed out") ||
+				strings.Contains(result.Error.Error(), "connection") ||
+				strings.Contains(result.Error.Error(), "reset") ||
+				strings.Contains(result.Error.Error(), "broken pipe") {
+				hc.connected = false
+				log.Printf("Host %s: Connection lost (%v), will reconnect", hc.config.Name, result.Error)
+				if hc.client != nil {
+					hc.client.Close()
+				}
 			}
 		}
 
@@ -291,7 +323,17 @@ func (hc *HostClient) pollOnce(mc *MultiHostClient) {
 	}
 }
 
-// readRegister reads a single register
+// Add helper method to parse timeout
+func (hc *HostClient) parseTimeout() time.Duration {
+	timeout, err := time.ParseDuration(hc.config.Timeout)
+	if err != nil {
+		log.Printf("Host %s: Invalid timeout format %s, using default", hc.config.Name, hc.config.Timeout)
+		return 5 * time.Second
+	}
+	return timeout
+}
+
+// Improve error handling in readRegister
 func (hc *HostClient) readRegister(reg RegisterConfig) ReadResult {
 	startTime := time.Now()
 	result := ReadResult{
@@ -299,7 +341,21 @@ func (hc *HostClient) readRegister(reg RegisterConfig) ReadResult {
 		Register: reg,
 	}
 
+	// Check if client is connected
+	if hc.client == nil || !hc.connected {
+		result.Error = fmt.Errorf("not connected")
+		result.Duration = time.Since(startTime)
+		return result
+	}
+
 	address := hc.getModbusAddress(reg)
+
+	defer func() {
+		if r := recover(); r != nil {
+			result.Error = fmt.Errorf("panic: %v", r)
+			result.Duration = time.Since(startTime)
+		}
+	}()
 
 	switch reg.Type {
 	case TypeCoil:
