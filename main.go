@@ -81,8 +81,8 @@ type MultiHostClient struct {
 
 func main() {
 	// Parse command line flags
-	configFile := flag.String("config", "config.json", "Path to JSON configuration file")
-	cycles := flag.Int("cycles", 0, "Number of polling cycles (0 for infinite)")
+	configFile := flag.String("config", "multi-host-config.json", "Path to JSON configuration file")
+	cycles := flag.Int("cycles", 10, "Number of polling cycles (0 for infinite)")
 	single := flag.Bool("single", false, "Run only once then exit")
 	logFile := flag.String("log", "", "Log to file instead of stdout")
 	flag.Parse()
@@ -304,23 +304,31 @@ func (hc *HostClient) readRegister(reg RegisterConfig) ReadResult {
 		}
 
 	case TypeInputRegister:
-		value, err := hc.client.ReadRegister(address, modbus.INPUT_REGISTER) // Changed from ReadInputRegister
+		registers, err := hc.client.ReadRegisters(address, 1, modbus.INPUT_REGISTER)
 		if err != nil {
 			result.Error = err
 		} else {
-			intValue := hc.interpretRegisterValue(value, reg)
-			result.Value = intValue
-			result.Success = true
+			if len(registers) > 0 {
+				intValue := hc.interpretRegisterValue(registers[0], reg)
+				result.Value = intValue
+				result.Success = true
+			} else {
+				result.Error = fmt.Errorf("no data received")
+			}
 		}
 
 	case TypeHoldingRegister:
-		value, err := hc.client.ReadRegister(address, modbus.HOLDING_REGISTER) // Changed from ReadHoldingRegister
+		registers, err := hc.client.ReadRegisters(address, 1, modbus.HOLDING_REGISTER)
 		if err != nil {
 			result.Error = err
 		} else {
-			intValue := hc.interpretRegisterValue(value, reg)
-			result.Value = intValue
-			result.Success = true
+			if len(registers) > 0 {
+				intValue := hc.interpretRegisterValue(registers[0], reg)
+				result.Value = intValue
+				result.Success = true
+			} else {
+				result.Error = fmt.Errorf("no data received")
+			}
 		}
 
 	default:
