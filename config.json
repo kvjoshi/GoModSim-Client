@@ -1,0 +1,50 @@
+{
+  "hosts": [
+    {
+      "name": "Main Controller",
+      "host": "127.0.0.1",
+      "port": 502,
+      "unit_id": 1,
+      "timeout": "5s",
+      "interval": "1s",
+      "enabled": true,
+      "registers": [
+        {
+          "name": "Emergency Stop",
+          "address": 10001,
+          "type": "coil",
+          "min_value": 0,
+          "max_value": 1
+        },
+        {
+          "name": "Stop Button",
+          "address": 10002,
+          "type": "coil",
+          "min_value": 0,
+          "max_value": 1
+        },
+        {
+          "name": "Humidity",
+          "address": 30000,
+          "type": "input_register",
+          "min_value": 50,
+          "max_value": 80
+        },
+        {
+          "name": "Temperature",
+          "address": 30008,
+          "type": "input_register",
+          "min_value": 2,
+          "max_value": 30
+        },
+        {
+          "name": "Fan Speed",
+          "address": 40001,
+          "type": "holding_register",
+          "min_value": 0,
+          "max_value": 10000
+        }
+      ]
+    }
+  ]
+}
